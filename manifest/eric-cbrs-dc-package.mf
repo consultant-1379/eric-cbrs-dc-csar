@@ -1,0 +1,5 @@
+metadata:
+vnf_product_name: CBRS
+vnf_provider_id: Ericsson
+vnf_package_version:
+vnf_release_date_time:

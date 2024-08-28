@@ -1,0 +1,204 @@
+modelVersion: 2.0
+
+description: "CBRS Standalone Domain Proxy Service "
+
+# See image catalog: https://confluence.lmera.ericsson.se/display/ACD/ADP+CICD+Docker+Image+Catalog
+docker-images:
+  - adp-release-auto: armdocker.rnd.ericsson.se/proj-adp-cicd-drop/bob-adp-release-auto:latest
+  - adp-helm-kubectl: armdocker.rnd.ericsson.se/proj-adp-cicd-drop/bob-py3kubehelmbuilder:latest
+  - grype-scan: armdocker.rnd.ericsson.se/proj-adp-cicd-drop/va-image-scanning-grype:latest
+  - trivy-inline-scan: armdocker.rnd.ericsson.se/proj-adp-cicd-drop/trivy-inline-scan:latest
+  - doc-builder: armdocker.rnd.ericsson.se/proj-adp-cicd-drop/bob-docbuilder:latest
+  - prepare-report: armdocker.rnd.ericsson.se/proj-axis_test/va_pentest_tools:latest
+  - generate-jira: armdocker.rnd.ericsson.se/proj-axis_test/cve-jira-task-generator:latest
+
+# Import environment variables (For example: Jenkins parameters)
+env:
+  - HOME
+  - PWD
+  - DOCKER_NETWORK (default=--network host)
+  - CSAR_VERSION
+  - CSAR_REPO
+  - CSAR_NAME (default=eric-cbrs-dc-csar)
+  - IMAGE_NAME
+  - HELM_REPO_TOKEN
+
+# Variables, set by below tasks
+var:
+  - csar-version
+  - csar-url
+  - docker-sock-group
+  - anchore-version
+  - trivy-version
+  - xray-version
+  - anchore-csv-report
+  - trivy-csv-report
+  - xray-csv-report
+  - final-report
+
+# Rules to execute
+rules:
+  init:
+    - task: set-csar-version
+      cmd: bash -c "echo ${env.CSAR_VERSION} | tee .bob/var.csar-version"
+    - task: set-csar-url
+      cmd: bash -c "echo ${env.CSAR_REPO}/${env.CSAR_NAME}/eric-cbrs-dc-package-${var.csar-version}.csar | tee .bob/var.csar-url"
+    - task: create-directory
+      cmd:
+        - mkdir -p temp
+        - mkdir -p rpmdb
+        - mkdir -p build/trivy-reports
+        - mkdir -p build/xray-reports
+
+  get-csar:
+    - task: download-csar
+      docker-image: adp-helm-kubectl
+      cmd:
+        - curl ${var.csar-url} -o temp/eric-cbrs-dc-package-${var.csar-version}.csar
+    - task: extract-csar
+      docker-image: adp-helm-kubectl
+      docker-flags:
+        - "-v ${env.PWD}/temp:${env.PWD}/temp"
+      cmd: unzip ${env.PWD}/temp/eric-cbrs-dc-package-${var.csar-version}.csar
+
+  anchore-grype-scan:
+    - task: fetch-image
+      cmd:  bash -c 'while read image; do docker pull $image; done < ${env.PWD}/Files/images.txt'
+    - task: anchore-grype-scan
+      docker-image: grype-scan
+      docker-in-docker: socket
+      cmd: bash -c 'while read image; do grype_scan --image $image --report-dir build/anchore-reports; done < ${env.PWD}/Files/images.txt'
+      
+  trivy-inline-scan:
+    - task: get-docker-sock-group
+      cmd: stat -c '%g' /var/run/docker.sock > .bob/var.docker-sock-group
+    - task: fetch-image
+      cmd:
+        - mkdir -p build/trivy-reports
+    - task: trivy-inline-scan-json-report
+      docker-image: trivy-inline-scan
+      docker-in-docker: socket
+      docker-flags:
+        - "--env HOME=${env.HOME}"
+        - "--volume ${env.HOME}/.docker:${env.HOME}/.docker"
+        - "--volume /var/run/docker.sock:/var/run/docker.sock"
+        - "--group-add ${var.docker-sock-group}"
+        - "--volume /etc/group:/etc/group:ro"
+        - "--volume /etc/passwd:/etc/passwd:ro"
+      cmd:  --format json --output build/trivy-reports/trivy.report.json --offline-scan --timeout 30m ${env.IMAGE_NAME}
+    - task: move-trivy-property-file
+      cmd: mv trivy_metadata.properties build/trivy-reports/trivy_metadata.properties
+
+  fetch-xray-report:
+    - task: xray-init
+      docker-image: adp-helm-kubectl
+      docker-flags:
+        - "-v ${env.PWD}:${env.PWD}"
+      cmd: python fetch-xray.py
+    - task: fetch-xray-report
+      docker-image: adp-release-auto
+      cmd: bash -c 'fetch-xray
+        --config ${env.PWD}/xray_report.config
+        --debug
+        --user cbrsciadm
+        --apikey ${env.HELM_REPO_TOKEN}
+        --output ${env.PWD}/build/xray-reports/xray_report.json
+        --set version=${var.csar-version}
+        --raw-output ${env.PWD}/build/xray-reports/raw_xray_report.json
+        --ignore-unindexed'
+
+  get-rpm-data:
+    - task: get-rpm-data
+      docker-image: prepare-report
+      docker-in-docker: socket
+      docker-flags:
+        - "--volume ${env.PWD}:${env.PWD}"
+        - "--group-add ${var.docker-sock-group}"
+        - "--volume /etc/group:/etc/group:ro"
+        - "--volume /etc/passwd:/etc/passwd:ro"
+        - "--volume /var/run/docker.sock:/var/run/docker.sock"
+      cmd: '/cloud/misc/RetrieveImageRpmDb.sh -i ${env.IMAGE_NAME} -p ./rpmdb/.'
+
+  prepare-reports:
+    - task: prepare-anchore-reports
+      docker-image: prepare-report
+      docker-in-docker: socket
+      docker-flags:
+        - "--volume ${env.PWD}:${env.PWD}"
+        - "--group-add ${var.docker-sock-group}"
+        - "--volume /etc/group:/etc/group:ro"
+        - "--volume /etc/passwd:/etc/passwd:ro"
+        - "--volume /var/run/docker.sock:/var/run/docker.sock"
+      cmd: '/cloud/anchore-grype/run_anchore-grype.sh -po -rd=${env.PWD}/build/anchore-reports -rm=containerized -pn=CBRS -pr=${var.csar-version} -if=${env.PWD}/Files/images.txt'
+    - task: prepare-trivy-reports
+      docker-image: prepare-report
+      docker-in-docker: socket
+      docker-flags:
+        - "--volume ${env.PWD}:${env.PWD}"
+        - "--group-add ${var.docker-sock-group}"
+        - "--volume /etc/group:/etc/group:ro"
+        - "--volume /etc/passwd:/etc/passwd:ro"
+        - "--volume /var/run/docker.sock:/var/run/docker.sock"
+      cmd: '/cloud/trivy/run_trivy.sh -po -rd=${env.PWD}/build/trivy-reports -rm=containerized -pn=CBRS -pr=${var.csar-version} -if=${env.PWD}/Files/images.txt'
+    - task: prepare-xray-reports
+      docker-image: prepare-report
+      docker-in-docker: socket
+      docker-flags:
+        - "--volume ${env.PWD}:${env.PWD}"
+        - "--group-add ${var.docker-sock-group}"
+        - "--volume /etc/group:/etc/group:ro"
+        - "--volume /etc/passwd:/etc/passwd:ro"
+        - "--volume /var/run/docker.sock:/var/run/docker.sock"
+        - "--env RUN_VA_USER=CBRSCIADM"
+        - "--env RUN_VA_PASSWORD=yVME2Ze2dQdfFYAcAMNgNyTJ"
+        - "--user $(id -u):$(id -g)"
+      cmd:
+        - mkdir -p xray-reports/reports_CBRS_${var.csar-version}
+        - '/cloud/xray/run_xray.sh  -pn=CBRS -pr=${var.csar-version} -if=${env.PWD}/xray_report.config -po'
+
+  remove-duplicates:
+    - task: remove-duplicates
+      docker-image: prepare-report
+      docker-flags:
+        - "--volume ${env.PWD}:${env.PWD}"
+        - "--group-add ${var.docker-sock-group}"
+        - "--volume /etc/group:/etc/group:ro"
+        - "--volume /etc/passwd:/etc/passwd:ro"
+        - "--volume /var/run/docker.sock:/var/run/docker.sock"
+      cmd: /cloud/merge/remove_duplications_from_cloud_va_tool_report.sh -r=${env.PWD}/build/${var.final-report} -o=${env.PWD}/build
+
+  merge-reports:
+    - task: get-anchore-details
+      cmd:
+        - cat ${env.PWD}/build/anchore-reports/anchore_metadata.properties |grep anchore_image|awk -F "=" '{print $2}' | tee .bob/var.anchore-version
+        - ls ${env.PWD}/build/anchore-reports/*.csv | tee .bob/var.anchore-csv-report
+    - task: get-trivy-details
+      cmd:
+        - cat ${env.PWD}/build/trivy-reports/trivy_metadata.properties |grep trivy_version|awk -F "=" '{print $2}' | tee .bob/var.trivy-version
+        - ls ${env.PWD}/build/trivy-reports/*.csv | tee .bob/var.trivy-csv-report
+    - task: get-xray-details
+      cmd:
+        - cat ${env.PWD}/build/xray-reports/xray_metadata.properties |grep xray_version|awk -F "=" '{print $2}' | tee .bob/var.xray-version
+        - ls ${env.PWD}/xray-reports/reports_CBRS_${var.csar-version}/results/final/*.csv | tee .bob/var.xray-csv-report
+    - task: merge-tool-reports
+      docker-image: prepare-report
+      docker-flags:
+        - "--volume ${env.PWD}:${env.PWD}"
+        - "--group-add ${var.docker-sock-group}"
+        - "--volume /etc/group:/etc/group:ro"
+        - "--volume /etc/passwd:/etc/passwd:ro"
+        - "--volume /var/run/docker.sock:/var/run/docker.sock"
+      cmd: /cloud/merge/join_tool_reports.sh -pn=CBRS -pr=${var.csar-version} -rd=${env.PWD}/build -tr=${var.trivy-csv-report} -ar=${var.anchore-csv-report} -xr=${var.xray-csv-report} -tv=${var.trivy-version} -av=${var.anchore-version} -xv=${var.xray-version}
+    - task: list-final-report
+      cmd: ls ${env.PWD}/build/ | grep final_report_CBRS | tee .bob/var.final-report
+
+  generate-jira:
+    - task: generate-jiras
+      docker-image: generate-jira
+      docker-flags:
+        - "--volume ${env.PWD}:${env.PWD}"
+        - "--group-add ${var.docker-sock-group}"
+        - "--volume /etc/group:/etc/group:ro"
+        - "--volume /etc/passwd:/etc/passwd:ro"
+        - "--volume /var/run/docker.sock:/var/run/docker.sock"
+      cmd: python3.9 ./python_script/Main.py

@@ -1,0 +1,207 @@
+modelVersion: 2.0
+
+description: "CBRS CSAR Pipeline"
+
+docker-images:
+  - adp-release-auto: armdocker.rnd.ericsson.se/proj-adp-cicd-drop/bob-adp-release-auto:latest
+  - am-package-manager: armdocker.rnd.ericsson.se/proj-am/releases/eric-am-package-manager:latest
+import:
+  common: common-properties.yaml
+properties:
+  - csar-drop-repo-path:  https://arm.seli.gic.ericsson.se/artifactory/proj-eric-cbrs-dc-drop-helm/eric-cbrs-dc-csar
+  - csar-ci-internal-repo-path:  https://arm.seli.gic.ericsson.se/artifactory/proj-eric-cbrs-dc-ci-internal-helm/eric-cbrs-dc-csar
+  - csar-released-repo-path: https://arm.seli.gic.ericsson.se/artifactory/proj-eric-cbrs-dc-released-helm/eric-cbrs-dc-csar
+  - required-crds: eric-data-key-value-database-rd-crd|eric-sec-certm-crd|eric-sec-sip-tls-crd
+env :
+   - RELEASE (default=true)
+   - DOCKER_CONFIG (default=${env.HOME}/.docker)
+   - HOME
+   - DOCKER_NETWORK (default=--network host)
+   - CSAR_PACKAGE_NAME
+   - PWD
+   - HELM_REPO_TOKEN
+   - GERRIT_USERNAME
+   - GERRIT_PASSWORD
+   - INT_CHART_REPO
+   - INT_CHART_VERSION
+   - ERIC-CBRS-DC-PACKAGE
+   - CSAR_LITE_PACKAGE_NAME
+   - CBRS_SSH
+   - BRANCH
+   - PRODUCTION_DATE (default = $(date +%FT%TZ --utc))
+
+var :
+   - commit-hash
+   - version
+   - version-prefix
+   - rstate
+   - docker-sock-group
+   - temp
+
+rules:
+  generate-new-version:
+    - task: generate-version
+      docker-image: adp-release-auto
+      cmd: generate-version -f VERSION_PREFIX --is-release ${env.RELEASE} --output version
+    - task: set-version-prefix
+      cmd: cat VERSION_PREFIX > .bob/var.version-prefix
+    - task: generate-rstate
+      docker-image: adp-release-auto
+      cmd: get_rstate.py ${var.version} > .bob/var.rstate
+    - task: get-commit-hash
+      docker-image: adp-release-auto
+      cmd: git rev-parse HEAD > .bob/var.commit-hash
+  get-charts:
+    - task: get integeration chart
+      docker-image: adp-release-auto
+      cmd:
+        - rm -rf charts
+        - mkdir charts
+        - 'curl  ${common.eric-cbrs-dc-package-path}-${common.eric-cbrs-dc-package-version}.tgz -o charts/eric-cbrs-dc-package-${common.eric-cbrs-dc-package-version}.tgz'
+
+   # Update common.properties file
+  update-common-properties:
+    - task: update-common-properties
+      cmd:
+        # sed separator is '#' as var.cbos-image-repo string includes '/'
+        - "sed -i 's#eric-cbrs-dc-package-path: .*#eric-cbrs-dc-package-path: \"${env.INT_CHART_REPO}/eric-cbrs-dc-package/eric-cbrs-dc-package\"#' common-properties.yaml" 
+        - "sed -i 's#eric-cbrs-dc-package-version: .*#eric-cbrs-dc-package-version: \"${env.INT_CHART_VERSION}\"#' common-properties.yaml" 
+        - git config user.name "CBRSCIADM"
+        - git config user.email "cbrsciadm-no-reply@nomail.com"
+        - git config user.password "${env.CBRS_SSH}"
+        - git add ${env.PWD}/common-properties.yaml
+        - git commit -m "${env.INT_CHART_VERSION}"
+        - git push origin HEAD:master
+  extract-crd:
+    - task: extract-crd
+      cmd:
+        - tar -tvf charts/eric-cbrs-dc-package-${common.eric-cbrs-dc-package-version}.tgz | egrep "${required-crds}" | awk '{print $6}' | tr '\n' ' ' | tee .bob/var.temp
+        - tar -xvf charts/eric-cbrs-dc-package-${common.eric-cbrs-dc-package-version}.tgz -C charts ${var.temp} --strip=6
+        - ls charts
+
+  extract-files:
+    - task: example-settings
+      cmd:
+        - tar -xf charts/eric-cbrs-dc-package-${common.eric-cbrs-dc-package-version}.tgz -C scripts eric-cbrs-dc-package/supporting-files/example-settings/MachineUser-configuration.json --strip=1
+    - task: extract-healthcheck-file
+      cmd:
+        - tar -xf charts/eric-cbrs-dc-package-${common.eric-cbrs-dc-package-version}.tgz -C scripts eric-cbrs-dc-package/scripts/k8shealthcheck/k8shealthcheck.py --strip=2
+        - tar -xf charts/eric-cbrs-dc-package-${common.eric-cbrs-dc-package-version}.tgz -C scripts eric-cbrs-dc-package/scripts/k8shealthcheck/logger.py --strip=2
+    - task: extract-version-information-file
+      cmd:
+        - tar -xf charts/eric-cbrs-dc-package-${common.eric-cbrs-dc-package-version}.tgz -C scripts eric-cbrs-dc-package/scripts/version-info/cbrs_version.py --strip=2
+    - task: extract-supporting-files
+      cmd:
+        - tar -xf charts/eric-cbrs-dc-package-${common.eric-cbrs-dc-package-version}.tgz -C scripts `tar tvf charts/eric-cbrs-dc-package-${common.eric-cbrs-dc-package-version}.tgz | grep supporting-files| awk '{print $6}'` --strip=1
+        - mv scripts/supporting-files/cbrs-ingress-controller-nx-ic.yaml scripts/supporting-files/IngressClass.yaml
+
+  add-version-info-to-integration-values:
+    - task: add-version-info
+      cmd:
+        - "sed -i 's#DEFAULT_CSAR_VERSION#${var.version}#g' integration-values/eric-cbrs-integration-values.yaml"
+    - task: add-production-date
+      cmd:
+        - "sed -i 's#DEFAULT_PRODUCTION_DATE#${env.PRODUCTION_DATE}#g' integration-values/eric-cbrs-integration-values.yaml"
+
+  build-csar:
+    - task: get-docker-sock-group
+      cmd: stat -c '%g' /var/run/docker.sock > .bob/var.docker-sock-group
+    - task: build-csar
+      docker-image: am-package-manager
+      docker-flags:
+        - "--env HOME=${env.HOME}"
+        - "--volume ${env.HOME}/.docker:${env.HOME}/.docker"
+        - "--volume ${env.PWD}:/csar"
+        - "--workdir /csar"
+        - "--volume /var/run/docker.sock:/var/run/docker.sock"
+        - "--group-add ${var.docker-sock-group}"
+        - "--volume /etc/group:/etc/group:ro"
+        - "--volume /etc/passwd:/etc/passwd:ro"
+      cmd:
+        - generate --helm3 -hd charts --helm-version=3.13.0 --name ${env.CSAR_PACKAGE_NAME}-${var.version} --values eric-cbrs-integration-values-csar-pipeline.yaml -sc scripts --set tags.eric-cbrs-dc-common=true,tags.eric-cbrs-dc-shared=true,tags.eric-cbrs-dc-deployment-1=true,tags.eric-cbrs-dc-deployment-2=true
+
+  build-csar-LITE:
+    - task: get-docker-sock-group
+      cmd: stat -c '%g' /var/run/docker.sock > .bob/var.docker-sock-group
+    - task: build-csar-LITE
+      docker-image: am-package-manager
+      docker-flags:
+        - "--env HOME=${env.HOME}"
+        - "--volume ${env.HOME}/.docker:${env.HOME}/.docker"
+        - "--volume ${env.PWD}:/csar"
+        - "--workdir /csar"
+        - "--volume /var/run/docker.sock:/var/run/docker.sock"
+        - "--group-add ${var.docker-sock-group}"
+        - "--volume /etc/group:/etc/group:ro"
+        - "--volume /etc/passwd:/etc/passwd:ro"
+      cmd:
+        - generate --no-images --helm3 -hd charts --helm-version=3.13.0 --name ${env.CSAR_LITE_PACKAGE_NAME}-${var.version} --values eric-cbrs-integration-values-csar-pipeline.yaml -sc scripts --set tags.eric-cbrs-dc-common=true,tags.eric-cbrs-dc-shared=true,tags.eric-cbrs-dc-deployment-1=true,tags.eric-cbrs-dc-deployment-2=true
+  upload-csar:
+    - task: upload-csar
+      docker-image: adp-release-auto
+      docker-flags:
+        - ${env.DOCKER_NETWORK}
+        - "--env HELM_REPO_TOKEN=${env.HELM_REPO_TOKEN}"
+      cmd: upload_file.sh
+        --filename=${env.CSAR_PACKAGE_NAME}-${var.version}.csar
+        --repository=${csar-drop-repo-path}
+        --api-token=${env.HELM_REPO_TOKEN}
+  upload-csar-LITE:
+    - task: upload-csar
+      docker-image: adp-release-auto
+      docker-flags:
+        - ${env.DOCKER_NETWORK}
+        - "--env HELM_REPO_TOKEN=${env.HELM_REPO_TOKEN}"
+      cmd: upload_file.sh
+        --filename=${env.CSAR_LITE_PACKAGE_NAME}-${var.version}.csar
+        --repository=${csar-ci-internal-repo-path}
+        --api-token=${env.HELM_REPO_TOKEN}
+    - task: adp-artifacts-properties
+      docker-image: adp-release-auto
+      cmd: generate-adp-artifacts
+           --chart-name ${env.CSAR_LITE_PACKAGE_NAME}
+           --chart-version ${var.version}
+           --chart-repo ${csar-ci-internal-repo-path}
+  upload-pointfix-release-csar:
+    - task: upload-csar
+      docker-image: adp-release-auto
+      docker-flags:
+        - ${env.DOCKER_NETWORK}
+        - "--env HELM_REPO_TOKEN=${env.HELM_REPO_TOKEN}"
+      cmd: upload_file.sh
+        --filename=${env.CSAR_PACKAGE_NAME}-${var.version}.csar
+        --repository=${csar-released-repo-path}
+        --api-token=${env.HELM_REPO_TOKEN}
+
+  create-csar-git-tag:
+    - task: git-tag
+      docker-image: adp-release-auto
+      docker-flags:
+        - "--env GERRIT_USERNAME"
+        - "--env GERRIT_PASSWORD"
+      cmd: version-handler create-git-tag
+           --tag ${var.version}
+           --message "CSAR Release ${var.version}"
+           --git-repo-path .
+    - task: adp-artifacts-properties
+      docker-image: adp-release-auto
+      cmd: generate-adp-artifacts
+           --chart-name ${env.CSAR_PACKAGE_NAME}
+           --chart-version ${var.version}
+           --chart-repo ${csar-drop-repo-path}
+  increment-pointfix-version-prefix:
+    - task: git-push-version-prefix-increment
+      docker-image: adp-release-auto
+      docker-flags:
+        - "--env GERRIT_USERNAME"
+        - "--env GERRIT_PASSWORD"
+      cmd: version-handler increment
+           --step-version-prefix "PATCH"
+           --git-repo-path .
+           --branch ${env.BRANCH}
+    - task: adp-artifacts-properties
+      docker-image: adp-release-auto
+      cmd: generate-adp-artifacts
+           --chart-name ${env.CSAR_PACKAGE_NAME}
+           --chart-version ${var.version}
+           --chart-repo ${csar-released-repo-path}

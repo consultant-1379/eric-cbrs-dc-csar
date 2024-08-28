@@ -1,0 +1,94 @@
+global:
+  timezone:
+  pullSecret:
+  registry:
+    url:
+  labels:
+  annotations:
+  metrics:
+    kubelet:
+      enabled:
+    cadvisormetrics:
+      enabled:
+    nodeexporter:
+      namespace:
+      serviceName:
+
+uninstall:
+  keepRoles:
+
+cmyp-brm:
+  user:
+  encryptedPass:
+
+eric-ran-security-service:
+  eric-sec-key-management:
+    deployClusterRoleBinding:
+
+eric-ran-log-service:
+  eric-data-search-engine:
+    persistence:
+      backup:
+        persistentVolumeClaim:
+          storageClassName:
+  eric-log-transformer:
+    egress:
+      syslog:
+        enabled:
+        remoteHosts:
+          - host:
+            port:
+        inclusions:
+        exclusions:
+
+eric-cnom-server:
+  ingress:
+    hostname:
+  service:
+    endpoints:
+      api:
+        tls:
+          verifyClientCertificate:
+
+eric-oss-ddc:
+  autoUpload:
+    deltaInterval:
+    enabled:
+    ddpid:
+    account:
+    password:
+
+ingressInfo: &ingressIp
+  loadBalancerIP:
+
+eric-cbrs-dc:
+  DCM_HOST:
+  CBRS_LOAD_BALANCER: *ingressIp
+  networkPolicy:
+    sasPort:
+  service:
+    dnsPort:
+
+eric-ran-cm-service:
+  eric-cm-yang-provider:
+    service:
+      loadBalancerIP:
+
+eric-oss-ingress-controller-nx:
+  rbac:
+    create:
+  ingressClassResource:
+    enabled:
+  service: *ingressIp
+
+eric-pm-alert-manager:
+  receivers:
+    - name: 'web.hook'
+      webhook_configs:
+        - url:
+
+# Information in following ericCbrsVersionConfigmap block is related to CSAR version and Production date for CSAR, Please do not change this.
+
+ericCbrsVersionConfigmap:
+  csarVersion: "DEFAULT_CSAR_VERSION"
+  productionDate: "DEFAULT_PRODUCTION_DATE"

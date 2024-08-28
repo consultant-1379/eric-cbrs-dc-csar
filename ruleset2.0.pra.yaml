@@ -1,0 +1,81 @@
+modelVersion: 2.0
+
+description: "CBRS CSAR PRA Pipeline"
+
+docker-images:
+  - adp-release-auto: armdocker.rnd.ericsson.se/proj-adp-cicd-drop/bob-adp-release-auto:latest
+properties:
+  - csar-drop-repo-path: https://arm.seli.gic.ericsson.se/artifactory/proj-eric-cbrs-dc-drop-helm/eric-cbrs-dc-csar
+  - csar-released-repo-path: https://arm.seli.gic.ericsson.se/artifactory/proj-eric-cbrs-dc-released-helm/eric-cbrs-dc-csar
+env :
+   - HOME
+   - RELEASE_CANDIDATE
+   - HELM_REPO_TOKEN
+   - SPRINT_END
+   - DOCKER_NETWORK (default=--network host)
+   - CBRS_SSH
+   - GERRIT_USERNAME
+   - GERRIT_PASSWORD
+   - CSAR_PACKAGE_NAME
+var :
+   - version
+   
+rules:
+  get-charts:
+    - task: get integeration chart
+      docker-image: adp-release-auto
+      cmd: 
+        - 'curl ${csar-drop-repo-path}/${env.CSAR_PACKAGE_NAME}-${env.RELEASE_CANDIDATE}.csar -o eric-cbrs-dc-package-${env.RELEASE_CANDIDATE}.csar'
+  upload-csar:
+    - task: upload-csar
+      docker-image: adp-release-auto
+      docker-flags:
+        - ${env.DOCKER_NETWORK}
+        - "--env HELM_REPO_TOKEN=${env.HELM_REPO_TOKEN}"
+      cmd: upload_file.sh
+        --filename=eric-cbrs-dc-package-${env.RELEASE_CANDIDATE}.csar
+        --repository=${csar-released-repo-path}
+        --api-token=${env.HELM_REPO_TOKEN}
+    - task: adp-artifacts-properties
+      docker-image: adp-release-auto
+      cmd: generate-adp-artifacts
+           --chart-name=eric-cbrs-dc-package
+           --chart-version ${env.RELEASE_CANDIDATE}
+           --chart-repo ${csar-released-repo-path}
+  increment-version-prefix:
+    - task: git-push-version-prefix-increment
+      docker-image: adp-release-auto
+      docker-flags:
+        - "--env GERRIT_USERNAME"
+        - "--env GERRIT_PASSWORD"
+      cmd: version-handler increment
+           --step-version-prefix "MINOR"
+           --git-repo-path .
+           --branch master
+    - task: set-version-prefix
+      cmd: cat VERSION_PREFIX > .bob/var.version 
+    - task: git-tag
+      docker-image: adp-release-auto
+      docker-flags:
+        - "--env GERRIT_USERNAME"
+        - "--env GERRIT_PASSWORD"
+      cmd: version-handler create-git-tag
+           --tag ${var.version}
+           --message "CSAR Release ${var.version}"
+           --git-repo-path .
+  new-pointfix-branch:
+    - task: git-pointfix-branch
+      cmd:
+        - git config user.name "CBRSCIADM"
+        - git config user.email "cbrsciadm-no-reply@nomail.com"
+        - git config user.password "${env.CBRS_SSH}"
+        - git checkout -b ${env.SPRINT_END}
+    - task: git-push-version-prefix-increment
+      docker-image: adp-release-auto
+      docker-flags:
+        - "--env GERRIT_USERNAME"
+        - "--env GERRIT_PASSWORD"
+      cmd: version-handler increment
+           --step-version-prefix "PATCH"
+           --git-repo-path .
+           --branch ${env.SPRINT_END}

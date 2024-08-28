@@ -1,0 +1,5 @@
+modelVersion: 2.0
+
+properties:
+  - eric-cbrs-dc-package-path: "https://arm.seli.gic.ericsson.se/artifactory/proj-eric-cbrs-dc-drop-helm/eric-cbrs-dc-package/eric-cbrs-dc-package"
+  - eric-cbrs-dc-package-version: "0.46.0-4"

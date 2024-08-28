@@ -1,0 +1,59 @@
+global:
+  timezone: Europe/Dublin
+
+uninstall:
+  keepRoles:
+
+cmyp-brm:
+  user: brobrm
+  encryptedPass: $1$OPAHcNsn$QTzz7pVY30CXQ0Q5esdOR1
+
+eric-ran-security-service:
+  eric-sec-key-management:
+    deployClusterRoleBinding:
+
+eric-ran-log-service:
+  eric-data-search-engine:
+    persistence:
+      backup:
+        persistentVolumeClaim:
+          storageClassName: nfs-cbrs16b6
+
+eric-cnom-server:
+  service:
+    endpoints:
+      api:
+        tls:
+          verifyClientCertificate: optional
+
+eric-oss-ddc:
+  autoUpload:
+    deltaInterval:
+    enabled:
+    ddpid:
+    account:
+    password:
+
+eric-cbrs-dc:
+  DCM_HOST: 141.137.239.136
+  networkPolicy:
+    sasPort: 5000
+
+eric-ran-cm-service:
+  eric-cm-yang-provider:
+    service:
+      loadBalancerIP:
+
+eric-oss-ingress-controller-nx:
+  rbac:
+    create:
+  ingressClassResource:
+    enabled:
+  service:
+    loadBalancerIP:
+
+eric-pm-alert-manager:
+  receivers:
+    - name: 'web.hook'
+      webhook_configs:
+        - url:

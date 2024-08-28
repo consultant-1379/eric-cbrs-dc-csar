@@ -1,0 +1,86 @@
+tosca_definitions_version: tosca_simple_yaml_1_2
+
+description: VNF Descriptor for CBRS
+
+imports:
+- etsi_nfv_sol001_vnfd_2_5_1_types.yaml
+
+data_types:
+  ericsson.CBRS.datatypes.nfv.InstantiateVnfOperationAdditionalParameters:
+    derived_from: tosca.datatypes.nfv.VnfOperationAdditionalParameters
+    properties:
+      global.timezone:
+        type: string
+        description: timezone
+        required: true
+      tags.eric-cbrs-dc-common:
+        type: boolean
+        description: dc-common tag
+        required: true
+        default: false
+      tags.eric-cbrs-dc-mediation:
+        type: boolean
+        description: dc-mediation tag
+        required: true
+        default: false
+
+node_types:
+  Ericsson.CBRS.<<VERSION>>:
+    derived_from: tosca.nodes.nfv.VNF
+    properties:
+      descriptor_id:
+        type: string
+        constraints: [ valid_values: [ <<DESCRIPTOR_ID>> ] ]
+        default: <<DESCRIPTOR_ID>>
+      descriptor_version:
+        type: string
+        constraints: [ valid_values: [ <<VERSION>> ] ]
+        default: <<VERSION>>
+      provider:
+        type: string
+        constraints: [ valid_values: [ Ericsson ] ]
+        default: Ericsson
+      product_name:
+        type: string
+        constraints: [ valid_values: [ CBRS ] ]
+        default: CBRS
+      software_version:
+        type: string
+        constraints: [ valid_values: [ <<PRODUCT_SET>> ] ]
+        default: <<PRODUCT_SET>>
+      vnfm_info:
+        type: list
+        entry_schema:
+          type: string
+          constraints: [ valid_values: [ '' ] ]
+        default: [ '' ]
+      flavour_id:
+        type: string
+        constraints: [ valid_values: [ default ] ]
+        default: default
+      flavour_description:
+        type: string
+        default: ''
+    interfaces:
+      Vnflcm:
+        type: tosca.interfaces.nfv.Vnflcm
+        instantiate:
+          inputs:
+            helm_packages:
+              type: list
+              required: true
+              description: list of all helm charts
+            additional_parameters:
+              type: ericsson.CBRS.datatypes.nfv.InstantiateVnfOperationAdditionalParameters
+              required: false
+        terminate: {}
+    artifacts:
+      helm_package:
+        description: Helm package for eric-cbrs-dc-application common applications
+        type: tosca.artifacts.File
+        file: Definitions/OtherTemplates/<<CHART>>
+      software_images:
+        description: Location of the software images being used in this package
+        type: tosca.artifacts.nfv.SwImage
+        file: Files/images/docker.tar
+topology_template:
